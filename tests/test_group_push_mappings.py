@@ -167,7 +167,8 @@ def _find_client(apps_pages, mappings_by_app):
     """Build a client whose raw executor serves an app list then per-app mappings.
 
     apps_pages: list of (response, json_body, err) tuples for GET /api/v1/apps.
-    mappings_by_app: dict app_id -> (response, json_body, err) for the mappings GET.
+    mappings_by_app: dict app_id -> (response, json_body, err) or a list of
+        page tuples for the mappings GET.
     """
     client = AsyncMock()
     client.get_base_url = MagicMock(return_value="https://test.okta.com")
@@ -185,7 +186,8 @@ def _find_client(apps_pages, mappings_by_app):
         if "/group-push/mappings" in url:
             # Extract appId from .../apps/{appId}/group-push/mappings
             app_id = url.split("/apps/")[1].split("/group-push")[0]
-            return mappings_by_app.get(app_id, (_make_response(), json.dumps([]), None))
+            pages = mappings_by_app.get(app_id, (_make_response(), json.dumps([]), None))
+            return pages.pop(0) if isinstance(pages, list) else pages
         # Otherwise it's the apps listing; pop pages in order.
         return apps_pages.pop(0)
 
@@ -345,6 +347,37 @@ async def test_find_apps_pushing_group_non_404_error_marks_incomplete(
     assert result["scan_complete"] is False
     assert "skipped_apps" not in result
     assert any("0oaPUSH1" in n for n in result.get("notes", []))
+
+
+@pytest.mark.asyncio
+@patch("okta_mcp_server.tools.group_push.group_push.get_okta_client")
+async def test_find_apps_pushing_group_mapping_page_limit_marks_incomplete(
+    mock_get_client, ctx_no_elicitation
+):
+    apps = [{"id": "0oaPUSH1", "label": "SCIM App", "features": ["GROUP_PUSH"]}]
+    mapping_pages = [
+        (
+            _make_response(after_cursor=f"PAGE{page + 2}"),
+            json.dumps([{"id": f"gpm{page}", "sourceGroupId": OTHER_GROUP_ID}]),
+            None,
+        )
+        for page in range(10)
+    ]
+    client = _find_client(
+        [(_make_response(), json.dumps(apps), None)], {"0oaPUSH1": mapping_pages}
+    )
+    mock_get_client.return_value = client
+
+    result = await find_apps_pushing_group(GROUP_ID, ctx=ctx_no_elicitation)
+
+    assert result["is_pushed_to_any_app"] is False
+    assert result["push_enabled_apps_checked"] == 1
+    assert result["scan_complete"] is False
+    assert any(
+        "0oaPUSH1" in note and "maximum page limit (10)" in note
+        for note in result.get("notes", [])
+    )
+    assert len(mapping_pages) == 0
 
 
 @pytest.mark.asyncio

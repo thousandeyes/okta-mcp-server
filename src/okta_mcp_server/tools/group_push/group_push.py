@@ -408,7 +408,9 @@ async def find_apps_pushing_group(
                 _MAPPINGS_MAX_LIMIT, source_group_id=group_id, status=normalized_status
             )
             path = f"/api/v1/apps/{app_id}/group-push/mappings"
-            mappings, resp, err, _ = await fetch_all_raw(client, path, params, max_pages=10)
+            mappings, resp, err, mappings_pinfo = await fetch_all_raw(
+                client, path, params, max_pages=10
+            )
             if err:
                 status = getattr(resp, "status", None) or getattr(resp, "status_code", None)
                 # A 404 means this (often stale) app instance has no group-push
@@ -422,6 +424,13 @@ async def find_apps_pushing_group(
                     scan_complete = False
                     notes.append(f"Could not read mappings for app {app_id} ({app_label}): {err}")
                 continue
+
+            if mappings_pinfo and mappings_pinfo.get("stopped_early"):
+                scan_complete = False
+                notes.append(
+                    f"Mapping scan stopped early for app {app_id} ({app_label}): "
+                    f"{mappings_pinfo.get('stop_reason')}"
+                )
 
             app_matches = [
                 m for m in (mappings or []) if _mapping_value(m, "sourceGroupId") == group_id
